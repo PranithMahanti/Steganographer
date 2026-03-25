@@ -1,39 +1,176 @@
-# Steganographer
-Colours can be represented as vectors, since each colour can be represented as a combination of RGB.  
-If we are going to use this for encoding/encryption, we will need a method to interpret text as a vector. 
+# Geometric Steganography via Angular Color Vector Encoding
 
-## Method 1: Basic
-#### Encoding
-One of the simplest algorithm I thought of was to use the direction of the vectors; each token (a letter or a number), differs by 10 degrees.
-Now we take each letter of the message, encode it and use the colour in a pixel. This way we can generate an image with our message.
+A steganographic method that hides text inside existing images by rotating pixel color vectors to target angles in the RG plane, rather than modifying pixel intensities. Each character is encoded in the *direction* of a pixel's color vector while its magnitude is preserved.
 
-But since this is too simple and the image generated will be too suspicious, we need to randomise the encoding for each token. This can be done by mapping each token to a range rather than a fixed direction. To the current direction of the token we can add +/- 5 degrees to get this range. Since the magnitude of the vector doesn't really matter, we can multiply the resultant vector by an arbitrary number.
+---
 
-#### Decoding
-To decode, we just have to retrace our steps:
-1. Find the unit vector of the pixel
-2. Find the direction of the vector
-3. Round it off to the nearest 10
-4. Find the corresponding token
+## How It Works
 
-#### Weaknesses
-Even with noise, an attacker could:
-1. Extract pixel vectors
-2. Compute angles
-3. Plot histogram
-This might give them 36 clusters, and figuring out the rest it relatively simple.
+A pixel's RGB triple can be interpreted as a vector in 3D color space. Conventional steganography (e.g. LSB) modifies the *magnitude* of color components. This project takes a different approach, that information is encoded in the *direction* of the vector, analogous to phase-shift keying in communications.
 
-### Ideas
-1. Right now, we are still operating in a 2D plane (Using only any two of RGB). We can turn this into a 3D sphere (using all three of RGB).
-2. Instead of having absolute angles, we can turn this into angles between two neighbouring vectors.
-3. Add a key to turn this into an encryption system.
-4. Using 128 ASCII tokens instead of 36 tokens.
+Each pixel is centered at the gray point `(128, 128, 128)`. The `(R-128, G-128)` pair forms a 2D vector in the RG plane. To encode a character:
 
-## Method 2:
+1. The character is mapped to one of 37 angular sectors (~9.73° each)
+2. The pixel's color vector is rotated to that sector
+3. The vector's original magnitude is preserved
+4. The B channel is never touched
 
-### 2.1
-I was wondering how to use the spherical system and then I remembered the concept of spherical coordinates. This will let us use the horizontal and vertical angles as the token; hence spreading across the sphere and making it harder to detect.
-The second idea of using relative directions is self-explanatory.
-### 2.2
-My roommate suggested dividing the region into 256 cubes and mapping each cube to an ASCII character. This is an interesting idea; I will implement this but I will not go forward with this idea because it will run into the same problem as Method 1, where the attacker can analyse clusters.
-(This method uses absolute coordinates too, not the direction)
+Decoding reads the angle of each modified pixel's color vector and maps it back to the nearest character.
+
+```
+Vocabulary: A-Z, 0-9, and space: 37 tokens: ~9.73° per token
+```
+
+---
+
+## Project Structure
+
+```
+M1
+├── method.py      # Encoder and decoder (cover image method)
+├── analysis.py     # Statistical analysis: histograms, PSNR, distortion
+├── noise_test.py         # Noise tolerance test across Gaussian sigma values
+├── img/                  # Output directory for encoded images and plots
+└── paper/
+    ├── paper.tex         # Full research paper (LaTeX)
+    └── refs.bib          # Bibliography
+```
+
+---
+
+## Requirements
+
+```
+pip install numpy pillow matplotlib
+```
+
+---
+
+## Usage
+
+### Encode a message into a cover image
+
+```python
+from method import encode_into_cover
+
+encode_into_cover(
+    message="Prometheus",
+    cover_image_path="cover.png",
+    output_path="img/stego.png"
+)
+```
+
+### Decode a message from a stego image
+
+```python
+from method import decode_from_cover
+
+message = decode_from_cover(
+    stego_image_path="img/stego.png",
+    message_length=11
+)
+print(message)  # Prometheus
+```
+
+### Quick correctness check
+
+```
+python method.py cover.png
+```
+
+---
+
+## Analysis
+
+### Cover vs. stego comparison
+
+Generates four plots comparing the cover and stego images:
+- Angle histogram (before and after encoding)
+- Polar distribution of color vectors
+- Per-pixel RGB distortion distribution
+- Magnitude preservation scatter plot (original r vs. encoded r)
+
+Also prints PSNR for the whole image and the encoded pixel region.
+
+```
+python analysis.py cover.png img/stego.png <message_length>
+```
+
+**Example:**
+```
+python analysis.py cover.png img/stego.png 5000
+```
+
+Output figures are saved to `img/`:
+```
+img/angle_comparison.png
+img/polar_comparison.png
+img/distortion.png
+img/magnitude_scatter.png
+```
+
+### Noise tolerance test
+
+Measures decode accuracy as Gaussian noise of increasing sigma is added to the stego image. Averages over multiple trials per sigma value.
+
+```
+python noise_test.py cover.png img/stego.png "YOUR MESSAGE"
+```
+
+Expected behavior: accuracy stays near 100% for low sigma, then drops sharply around σ ≈ 5 (pixel units), consistent with the ±4.86° decoding tolerance.
+
+Output: `img/noise_tolerance.png`
+
+---
+
+## Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `TOKENS` | `A-Z 0-9 space` | 37-character vocabulary |
+| `ANGLE_STEP` | `~9.73°` | Angular sector width per token |
+| `MIN_R` | `30` | Minimum vector magnitude (magnitude floor for near-gray pixels) |
+| Encoding noise | `±4°` | Uniform noise added per token to avoid hard boundaries |
+
+---
+
+## Detectability
+
+The encoding introduces a **geometric fingerprint**: the angle distribution of modified pixels collapses into 37 equally-spaced peaks, which is absent from natural images and detectable by simple histogram analysis.
+
+This is a known limitation of absolute angular encoding. Two extensions are proposed in the paper to address it:
+
+- **Differential encoding** — encodes angular *increments* between consecutive pixels rather than absolute angles, causing the marginal distribution to converge to uniform. Also acts as a stream cipher when the initial reference angle is kept secret.
+- **Spherical encoding** — generalizes the scheme to all three RGB channels using spherical coordinates, increasing vocabulary capacity and dispersing the fingerprint into a harder-to-analyze 3D space.
+
+---
+
+## Paper
+
+A full write-up of the method, quantization error analysis, and experimental results is in `paper/paper.tex`. Compile with:
+
+```
+pdflatex paper.tex
+bibtex paper
+pdflatex paper.tex
+pdflatex paper.tex
+```
+
+The compiled paper (in pdf format) is also available: `Geometric_Encoding_Schemes_for_Image_Steganography_Using_Vector_Direction.pdf`
+
+---
+
+## Limitations
+
+- **Cover image required** — the encoder modifies pixels in an existing image; it does not generate synthetic images
+- **Lossless formats only** — JPEG compression shifts pixel values and corrupts the encoded angles; use PNG
+- **Spatial domain fragility** — any post-processing that alters pixel values (resize, color correction) will break decoding
+- **No error correction** — a single-pixel corruption causes a single character error; adding a Reed-Solomon or BCH code before encoding would improve robustness
+
+---
+
+## Author
+
+Mahanti Pranith  
+B.E. Computer Science, BITS Pilani Hyderabad Campus  
+`pranithmahanti@gmail.com`
